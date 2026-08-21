@@ -1,4 +1,4 @@
-"""Benchmark Pandas, eager Polars, and streaming Polars on loan CSV files."""
+"""Benchmark Pandas and Polars execution modes on loan CSV files."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from time import perf_counter
 
 import pandas as pd
 import polars as pl
+import pyarrow as pa
 
 
 REQUIRED_COLUMNS = ("addr_state", "issue_d", "int_rate")
@@ -27,18 +28,7 @@ def find_csvs(data_dir: Path) -> list[Path]:
     return paths
 
 
-def calculate_with_pandas(csv_paths: Sequence[Path]) -> pd.DataFrame:
-    loans = pd.concat(
-        [
-            pd.read_csv(
-                path,
-                usecols=list(REQUIRED_COLUMNS),
-                dtype={column: "string" for column in REQUIRED_COLUMNS},
-            )
-            for path in csv_paths
-        ],
-        ignore_index=True,
-    )
+def _pandas_aggregation(loans: pd.DataFrame) -> pd.DataFrame:
     loans["year"] = pd.to_datetime(
         loans["issue_d"], format="%b-%y", errors="coerce"
     ).dt.year
@@ -52,6 +42,39 @@ def calculate_with_pandas(csv_paths: Sequence[Path]) -> pd.DataFrame:
         .rename(columns={"interest_rate": "average_interest_rate"})
         .sort_values(["year", "addr_state"], ignore_index=True)
     )
+
+
+def calculate_with_pandas(csv_paths: Sequence[Path]) -> pd.DataFrame:
+    """Read with Pandas' default C parser and NumPy-backed nullable dtypes."""
+    loans = pd.concat(
+        [
+            pd.read_csv(
+                path,
+                usecols=list(REQUIRED_COLUMNS),
+                dtype={column: "string" for column in REQUIRED_COLUMNS},
+            )
+            for path in csv_paths
+        ],
+        ignore_index=True,
+    )
+    return _pandas_aggregation(loans)
+
+
+def calculate_with_pandas_pyarrow(csv_paths: Sequence[Path]) -> pd.DataFrame:
+    """Read with Pandas' multithreaded PyArrow parser and Arrow-backed dtypes."""
+    loans = pd.concat(
+        [
+            pd.read_csv(
+                path,
+                usecols=list(REQUIRED_COLUMNS),
+                engine="pyarrow",
+                dtype_backend="pyarrow",
+            )
+            for path in csv_paths
+        ],
+        ignore_index=True,
+    )
+    return _pandas_aggregation(loans)
 
 
 def _polars_aggregation(
@@ -141,6 +164,7 @@ def benchmark(
         tuple[str, Callable[[Sequence[Path]], pd.DataFrame | pl.DataFrame]]
     ] = [
         ("Pandas", calculate_with_pandas),
+        ("Pandas (PyArrow)", calculate_with_pandas_pyarrow),
         ("Polars", calculate_with_polars),
         ("Polars streaming", calculate_with_polars_streaming),
     ]
@@ -189,8 +213,14 @@ def main() -> None:
 
     csv_paths = find_csvs(args.data_dir)
     total_gib = sum(path.stat().st_size for path in csv_paths) / 1024**3
-    print(f"Python {sys.version.split()[0]} | pandas {pd.__version__} | polars {pl.__version__}")
-    print(f"{platform.platform()} | logical CPUs: {os.cpu_count()}")
+    print(
+        f"Python {sys.version.split()[0]} | pandas {pd.__version__} | "
+        f"pyarrow {pa.__version__} | polars {pl.__version__}"
+    )
+    print(
+        f"{platform.platform()} | logical CPUs: {os.cpu_count()} | "
+        f"Polars threads: {pl.thread_pool_size()} | PyArrow threads: {pa.cpu_count()}"
+    )
     print(f"Benchmarking {len(csv_paths)} CSV files ({total_gib:.2f} GiB)...")
     summary, results = benchmark(csv_paths, args.rounds)
     print(summary.to_string(index=False, float_format=lambda value: f"{value:.3f}"))

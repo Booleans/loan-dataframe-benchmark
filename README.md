@@ -1,7 +1,8 @@
 # Loan DataFrame Benchmark
 
-A reproducible comparison of Pandas, eager Polars, and Polars' streaming engine
-for aggregating loan interest rates by state and year across multiple CSV files.
+A reproducible comparison of standard Pandas, Pandas with PyArrow, eager
+Polars, and Polars' streaming engine for aggregating loan interest rates by
+state and year across multiple CSV files.
 
 ## Workload
 
@@ -40,47 +41,55 @@ not a claim that every machine or dataset will produce the same result.
 
 | Implementation | Median time | Speedup vs. Pandas |
 | --- | ---: | ---: |
-| Polars streaming | 0.319 s | 18.98x |
-| Polars | 0.529 s | 11.44x |
-| Pandas | 6.050 s | 1.00x |
+| Polars streaming | 0.317 s | 19.60x |
+| Polars | 0.494 s | 12.57x |
+| Pandas (PyArrow) | 1.525 s | 4.07x |
+| Pandas | 6.208 s | 1.00x |
 
-Environment: Python 3.14.7, Pandas 2.3.3, Polars 1.43.2. All three methods
-returned the same 655 state/year groups.
+Environment: Python 3.14.7, Pandas 2.3.3, PyArrow 25.0.1, Polars 1.43.2.
+Results are medians from 10 rounds. All four methods returned the same 655
+state/year groups.
 
 ## How CPU cores affected the result
 
-The example machine exposed 8 logical CPUs, and Polars created an 8-thread
-worker pool. Polars can parallelize CSV parsing, expressions, and aggregation,
-so both eager and streaming Polars benefited from the available cores. See the
+The example machine exposed 8 logical CPUs. Both Polars and PyArrow created
+8-thread worker pools. Polars can parallelize CSV parsing, expressions, and
+aggregation, so both eager and streaming Polars benefited from the available
+cores. See the
 [Polars CSV threading documentation](https://docs.pola.rs/api/python/stable/reference/api/polars.read_csv.html)
 and [`polars.thread_pool_size`](https://docs.pola.rs/api/python/stable/reference/api/polars.thread_pool_size.html).
 
-The Pandas implementation uses its default C CSV parser. For the Pandas version
-used in this benchmark, CSV multithreading is available through the optional
-PyArrow engine, which this test does not use. See the
+The standard Pandas implementation uses its default C CSV parser. The added
+`Pandas (PyArrow)` implementation uses Pandas with the multithreaded PyArrow
+CSV engine and Arrow-backed dtypes. This gives Pandas access to parallel CSV
+parsing and makes the comparison more representative of optimized modern
+Pandas. See the
 [Pandas CSV parser documentation](https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.read_csv.html).
-Consequently, the reported 18.98x speedup is not an equal single-core
-comparison. It represents each library's default throughput on this particular
-8-thread machine, including Polars' ability to use parallel hardware.
+PyArrow's multithreaded CSV reader is documented in the
+[Apache Arrow CSV guide](https://arrow.apache.org/docs/python/csv.html).
+
+Streaming Polars was 4.81x faster than PyArrow Pandas in this example. That is
+a more balanced parallel comparison, although it still does not isolate CSV
+parsing from the Pandas transformations and aggregation that follow it. The
+reported results represent each configuration's default end-to-end throughput
+on this particular 8-thread machine, not equal single-core performance.
 
 That is a reasonable comparison for an application allowed to use all
-available CPU resources. For a core-scaling study, run Polars in separate
-processes with controlled thread counts:
+available CPU resources. For a core-scaling study, run separate processes with
+both the Polars and Arrow thread pools limited to the same size:
 
 ```powershell
-$env:POLARS_MAX_THREADS = "1"
-uv run python benchmark.py data --rounds 10 --output results-1-thread.csv
-
-$env:POLARS_MAX_THREADS = "2"
-uv run python benchmark.py data --rounds 10 --output results-2-threads.csv
-
-$env:POLARS_MAX_THREADS = "4"
-uv run python benchmark.py data --rounds 10 --output results-4-threads.csv
-
-$env:POLARS_MAX_THREADS = "8"
-uv run python benchmark.py data --rounds 10 --output results-8-threads.csv
+foreach ($threads in 1, 2, 4, 8) {
+    $env:POLARS_MAX_THREADS = "$threads"
+    $env:OMP_NUM_THREADS = "$threads"
+    $env:OMP_THREAD_LIMIT = "$threads"
+    uv run python benchmark.py data --rounds 10 `
+        --output "results-$threads-threads.csv"
+}
 
 Remove-Item Env:POLARS_MAX_THREADS
+Remove-Item Env:OMP_NUM_THREADS
+Remove-Item Env:OMP_THREAD_LIMIT
 ```
 
 Performance should not be expected to scale linearly with thread count. Disk
@@ -108,11 +117,15 @@ Using `duration x 2 GB x $0.0000166667`, plus the request charge, gives:
 
 | Implementation | Assumed duration | Cost per invocation | Cost per 1M invocations |
 | --- | ---: | ---: | ---: |
-| Polars streaming | 0.319 s | $0.00001083 | $10.83 |
-| Pandas | 6.050 s | $0.00020187 | $201.87 |
+| Polars streaming | 0.317 s | $0.00001077 | $10.77 |
+| Pandas (PyArrow) | 1.525 s | $0.00005103 | $51.03 |
+| Pandas | 6.208 s | $0.00020713 | $207.13 |
 
-Under these assumptions, Polars streaming is approximately **94.6% less
-expensive**, a potential saving of about **$191.03 per million invocations**.
+Under these assumptions, Polars streaming is approximately **94.8% less
+expensive than standard Pandas**, a potential saving of about **$196.37 per
+million invocations**. Compared with PyArrow Pandas, streaming Polars is
+approximately **78.9% less expensive**, a potential saving of about **$40.27
+per million invocations**.
 This estimate covers Lambda compute and request charges only. It excludes S3
 requests and storage, additional ephemeral storage, data transfer, logging,
 cold starts, retries, and orchestration. See the current
@@ -128,7 +141,7 @@ machine used for the example. Real applications also include package imports,
 S3 downloads, result writes, cold starts, concurrency, and production data
 distributions that this benchmark does not reproduce.
 
-Before making an architecture or purchasing decision, deploy all three
+Before making an architecture or purchasing decision, deploy all four
 implementations to the customer's AWS environment and test with representative
 production code and data. Compare multiple Lambda memory settings and both
 warm and cold invocations, then calculate cost from Lambda's actual billed

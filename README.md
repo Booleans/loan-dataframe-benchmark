@@ -24,13 +24,13 @@ CSVs in `data/`. Each CSV must contain the three columns listed above.
 
 ```powershell
 uv sync
-uv run python benchmark.py data --rounds 3
+uv run python benchmark.py data --rounds 10
 ```
 
 Save the timing summary with:
 
 ```powershell
-uv run python benchmark.py data --rounds 3 --output benchmark_results.csv
+uv run python benchmark.py data --rounds 10 --output benchmark_results.csv
 ```
 
 ## Example result
@@ -69,16 +69,16 @@ processes with controlled thread counts:
 
 ```powershell
 $env:POLARS_MAX_THREADS = "1"
-uv run python benchmark.py data --rounds 3 --output results-1-thread.csv
+uv run python benchmark.py data --rounds 10 --output results-1-thread.csv
 
 $env:POLARS_MAX_THREADS = "2"
-uv run python benchmark.py data --rounds 3 --output results-2-threads.csv
+uv run python benchmark.py data --rounds 10 --output results-2-threads.csv
 
 $env:POLARS_MAX_THREADS = "4"
-uv run python benchmark.py data --rounds 3 --output results-4-threads.csv
+uv run python benchmark.py data --rounds 10 --output results-4-threads.csv
 
 $env:POLARS_MAX_THREADS = "8"
-uv run python benchmark.py data --rounds 3 --output results-8-threads.csv
+uv run python benchmark.py data --rounds 10 --output results-8-threads.csv
 
 Remove-Item Env:POLARS_MAX_THREADS
 ```

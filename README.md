@@ -24,13 +24,13 @@ CSVs in `data/`. Each CSV must contain the three columns listed above.
 
 ```powershell
 uv sync
-uv run python benchmark.py data --rounds 3
+uv run python benchmark.py data --rounds 10
 ```
 
 Save the timing summary with:
 
 ```powershell
-uv run python benchmark.py data --rounds 3 --output benchmark_results.csv
+uv run python benchmark.py data --rounds 10 --output benchmark_results.csv
 ```
 
 ## Example result
@@ -46,6 +46,49 @@ not a claim that every machine or dataset will produce the same result.
 
 Environment: Python 3.14.7, Pandas 2.3.3, Polars 1.43.2. All three methods
 returned the same 655 state/year groups.
+
+## How CPU cores affected the result
+
+The example machine exposed 8 logical CPUs, and Polars created an 8-thread
+worker pool. Polars can parallelize CSV parsing, expressions, and aggregation,
+so both eager and streaming Polars benefited from the available cores. See the
+[Polars CSV threading documentation](https://docs.pola.rs/api/python/stable/reference/api/polars.read_csv.html)
+and [`polars.thread_pool_size`](https://docs.pola.rs/api/python/stable/reference/api/polars.thread_pool_size.html).
+
+The Pandas implementation uses its default C CSV parser. For the Pandas version
+used in this benchmark, CSV multithreading is available through the optional
+PyArrow engine, which this test does not use. See the
+[Pandas CSV parser documentation](https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.read_csv.html).
+Consequently, the reported 18.98x speedup is not an equal single-core
+comparison. It represents each library's default throughput on this particular
+8-thread machine, including Polars' ability to use parallel hardware.
+
+That is a reasonable comparison for an application allowed to use all
+available CPU resources. For a core-scaling study, run Polars in separate
+processes with controlled thread counts:
+
+```powershell
+$env:POLARS_MAX_THREADS = "1"
+uv run python benchmark.py data --rounds 10 --output results-1-thread.csv
+
+$env:POLARS_MAX_THREADS = "2"
+uv run python benchmark.py data --rounds 10 --output results-2-threads.csv
+
+$env:POLARS_MAX_THREADS = "4"
+uv run python benchmark.py data --rounds 10 --output results-4-threads.csv
+
+$env:POLARS_MAX_THREADS = "8"
+uv run python benchmark.py data --rounds 10 --output results-8-threads.csv
+
+Remove-Item Env:POLARS_MAX_THREADS
+```
+
+Performance should not be expected to scale linearly with thread count. Disk
+throughput, memory bandwidth, CPU architecture, and the difference between
+physical cores and logical threads can all become bottlenecks. This is also
+important for AWS Lambda: Lambda allocates CPU in proportion to configured
+memory, so the desktop speedup should not be assumed at every Lambda memory
+setting.
 
 ## Illustrative AWS Lambda cost estimate
 

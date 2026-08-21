@@ -1,8 +1,8 @@
 # Loan DataFrame Benchmark
 
 A reproducible comparison of standard Pandas, Pandas with PyArrow, eager
-Python Polars, Python Polars streaming, and native Rust Polars streaming for
-aggregating loan interest rates by state and year across multiple CSV files.
+Polars, and Polars' streaming engine for aggregating loan interest rates by
+state and year across multiple CSV files.
 
 ## Workload
 
@@ -18,31 +18,15 @@ The benchmark verifies that all implementations return the same groups and
 numerically equivalent averages. Timed runs rotate implementation order to
 reduce filesystem-cache bias.
 
-The Rust binary runs as a persistent worker. Compilation and process startup
-are outside the timed rounds; CSV processing and serialization of the 655-row
-result back to Python are inside them. This avoids turning a data-engine
-benchmark into a process-launch benchmark while preserving end-to-end result
-validation in one harness.
-
 ## Run
 
-Install [uv](https://docs.astral.sh/uv/) and the stable
-[Rust toolchain](https://rustup.rs/), clone this repository, and place loan
+Install [uv](https://docs.astral.sh/uv/), clone this repository, and place loan
 CSVs in `data/`. Each CSV must contain the three columns listed above.
 
-Build the Rust worker in release mode, then install the Python environment and
-run the benchmark:
-
 ```powershell
-cargo build --release --manifest-path rust/Cargo.toml
 uv sync
 uv run python benchmark.py data --rounds 10
 ```
-
-On Windows, Rust's MSVC target also requires the Visual Studio Build Tools
-**Desktop development with C++** workload. Run the Cargo command from a
-Developer PowerShell so `link.exe` is available. Linux and macOS require their
-platform C/C++ build tools.
 
 Save the timing summary with:
 
@@ -57,32 +41,21 @@ not a claim that every machine or dataset will produce the same result.
 
 | Implementation | Median time | Speedup vs. Pandas |
 | --- | ---: | ---: |
-| Polars streaming | 0.228 s | 20.49x |
-| Polars | 0.447 s | 10.44x |
-| Rust Polars streaming | 0.539 s | 8.67x |
-| Pandas (PyArrow) | 1.343 s | 3.48x |
-| Pandas | 4.670 s | 1.00x |
+| Polars streaming | 0.255 s | 19.03x |
+| Polars | 0.428 s | 11.33x |
+| Pandas (PyArrow) | 1.390 s | 3.49x |
+| Pandas | 4.849 s | 1.00x |
 
-Environment: Python 3.14.7, Pandas 2.3.3, PyArrow 25.0.1, Python Polars
-1.43.2, Rust 1.97.0, and the Rust Polars crate 0.55.2. The Rust binary used
-Polars' `performant` feature, thin LTO, and one code-generation unit. Results
-are medians from 10 rounds. All five methods returned the same 655 state/year
-groups.
-
-The Rust crate and Python package use different version-numbering lines. The
-Rust result should therefore be read as a benchmark of this pinned Rust build,
-not as a measurement of language overhead around the exact same Polars engine
-binary. In this run, native Rust was faster than both Pandas configurations but
-slower than both Python Polars configurations; removing Python did not by
-itself make the workload faster.
+Environment: Python 3.14.7, Pandas 2.3.3, PyArrow 25.0.1, and Polars 1.43.2.
+Results are medians from 10 rounds. All four methods returned the same 655
+state/year groups.
 
 ## How CPU cores affected the result
 
-The example machine exposed 8 logical CPUs. Python Polars and PyArrow reported
-8-thread worker pools, while the Rust Polars process also defaulted to the
-machine's available parallelism. Polars can parallelize CSV parsing,
-expressions, and aggregation, so the eager and both streaming Polars variants
-benefited from the available cores. See the
+The example machine exposed 8 logical CPUs. Both Polars and PyArrow reported
+8-thread worker pools. Polars can parallelize CSV parsing, expressions, and
+aggregation, so both eager and streaming Polars benefited from the available
+cores. See the
 [Polars CSV threading documentation](https://docs.pola.rs/api/python/stable/reference/api/polars.read_csv.html)
 and [`polars.thread_pool_size`](https://docs.pola.rs/api/python/stable/reference/api/polars.thread_pool_size.html).
 
@@ -95,7 +68,7 @@ Pandas. See the
 PyArrow's multithreaded CSV reader is documented in the
 [Apache Arrow CSV guide](https://arrow.apache.org/docs/python/csv.html).
 
-Python streaming Polars was 5.90x faster than PyArrow Pandas in this example.
+Streaming Polars was 5.45x faster than PyArrow Pandas in this example.
 That is a more balanced parallel comparison, although it still does not isolate
 CSV parsing from the Pandas transformations and aggregation that follow it.
 The reported results represent each configuration's default end-to-end
@@ -145,19 +118,16 @@ Using `duration x 2 GB x $0.0000166667`, plus the request charge, gives:
 
 | Implementation | Assumed duration | Cost per invocation | Cost per 1M invocations |
 | --- | ---: | ---: | ---: |
-| Polars streaming | 0.228 s | $0.00000780 | $7.80 |
-| Polars | 0.447 s | $0.00001510 | $15.10 |
-| Rust Polars streaming | 0.539 s | $0.00001817 | $18.17 |
-| Pandas (PyArrow) | 1.343 s | $0.00004497 | $44.97 |
-| Pandas | 4.670 s | $0.00015587 | $155.87 |
+| Polars streaming | 0.255 s | $0.00000870 | $8.70 |
+| Polars | 0.428 s | $0.00001447 | $14.47 |
+| Pandas (PyArrow) | 1.390 s | $0.00004653 | $46.53 |
+| Pandas | 4.849 s | $0.00016183 | $161.83 |
 
-Under these assumptions, Python Polars streaming is approximately **95.0% less
-expensive than standard Pandas**, a potential saving of about **$148.07 per
-million invocations**. Compared with PyArrow Pandas, Python streaming Polars is
-approximately **82.7% less expensive**, a potential saving of about **$37.17
-per million invocations**. Rust Polars streaming is approximately **88.3% less
-expensive than standard Pandas**, a potential saving of about **$137.70 per
-million invocations**.
+Under these assumptions, Polars streaming is approximately **94.6% less
+expensive than standard Pandas**, a potential saving of about **$153.13 per
+million invocations**. Compared with PyArrow Pandas, streaming Polars is
+approximately **81.3% less expensive**, a potential saving of about **$37.83
+per million invocations**.
 This estimate covers Lambda compute and request charges only. It excludes S3
 requests and storage, additional ephemeral storage, data transfer, logging,
 cold starts, retries, and orchestration. See the current
@@ -173,7 +143,7 @@ machine used for the example. Real applications also include package imports,
 S3 downloads, result writes, cold starts, concurrency, and production data
 distributions that this benchmark does not reproduce.
 
-Before making an architecture or purchasing decision, deploy all five
+Before making an architecture or purchasing decision, deploy all four
 implementations to the customer's AWS environment and test with representative
 production code and data. Compare multiple Lambda memory settings and both
 warm and cold invocations, then calculate cost from Lambda's actual billed

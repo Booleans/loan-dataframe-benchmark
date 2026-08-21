@@ -3,4 +3,3 @@ __pycache__/
 *.py[cod]
 data/*.csv
 benchmark_results.csv
-rust/target/

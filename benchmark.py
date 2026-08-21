@@ -1,13 +1,15 @@
-"""Benchmark Pandas and Polars execution modes on loan CSV files."""
+"""Benchmark Pandas, Python Polars, and Rust Polars on loan CSV files."""
 
 from __future__ import annotations
 
 import argparse
 import gc
+import json
 import math
 import os
 import platform
 import statistics
+import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -19,6 +21,68 @@ import pyarrow as pa
 
 
 REQUIRED_COLUMNS = ("addr_state", "issue_d", "int_rate")
+
+
+class RustPolarsWorker:
+    """Persistent Rust process so startup is excluded from timed rounds."""
+
+    def __init__(self, binary: Path, data_dir: Path) -> None:
+        if not binary.is_file():
+            raise FileNotFoundError(
+                f"Rust benchmark binary not found at {binary.resolve()}. "
+                "Build it with: cargo build --release --manifest-path rust/Cargo.toml"
+            )
+        self.process = subprocess.Popen(
+            [str(binary.resolve()), str(data_dir.resolve())],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+        )
+        ready = self._read_response()
+        if ready.get("status") != "ready":
+            self.close()
+            raise RuntimeError(f"Unexpected response from Rust worker: {ready}")
+
+    def _read_response(self) -> dict[str, object]:
+        assert self.process.stdout is not None
+        line = self.process.stdout.readline()
+        if not line:
+            assert self.process.stderr is not None
+            error = self.process.stderr.read().strip()
+            raise RuntimeError(
+                "Rust worker exited unexpectedly" + (f": {error}" if error else "")
+            )
+        response = json.loads(line)
+        if not isinstance(response, dict):
+            raise RuntimeError(f"Unexpected response from Rust worker: {response}")
+        return response
+
+    def calculate(self, _csv_paths: Sequence[Path]) -> pd.DataFrame:
+        assert self.process.stdin is not None
+        self.process.stdin.write("run\n")
+        self.process.stdin.flush()
+        response = self._read_response()
+        rows = response.get("rows")
+        if not isinstance(rows, list):
+            raise RuntimeError(f"Rust worker did not return rows: {response}")
+        return pd.DataFrame.from_records(rows)
+
+    def close(self) -> None:
+        if self.process.poll() is None:
+            assert self.process.stdin is not None
+            try:
+                self.process.stdin.write("quit\n")
+                self.process.stdin.flush()
+            except BrokenPipeError:
+                pass
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
 
 
 def find_csvs(data_dir: Path) -> list[Path]:
@@ -158,7 +222,7 @@ def assert_matching_results(results: dict[str, pd.DataFrame | pl.DataFrame]) -> 
 
 
 def benchmark(
-    csv_paths: Sequence[Path], rounds: int
+    csv_paths: Sequence[Path], rounds: int, rust_worker: RustPolarsWorker
 ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame | pl.DataFrame]]:
     implementations: list[
         tuple[str, Callable[[Sequence[Path]], pd.DataFrame | pl.DataFrame]]
@@ -167,6 +231,7 @@ def benchmark(
         ("Pandas (PyArrow)", calculate_with_pandas_pyarrow),
         ("Polars", calculate_with_polars),
         ("Polars streaming", calculate_with_polars_streaming),
+        ("Rust Polars streaming", rust_worker.calculate),
     ]
     timings = {name: [] for name, _ in implementations}
     latest_results: dict[str, pd.DataFrame | pl.DataFrame] = {}
@@ -203,6 +268,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("data_dir", nargs="?", default=Path("data"), type=Path)
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--rust-binary",
+        type=Path,
+        default=Path("rust/target/release/loan-benchmark-rust.exe")
+        if os.name == "nt"
+        else Path("rust/target/release/loan-benchmark-rust"),
+    )
     return parser.parse_args()
 
 
@@ -221,8 +293,13 @@ def main() -> None:
         f"{platform.platform()} | logical CPUs: {os.cpu_count()} | "
         f"Polars threads: {pl.thread_pool_size()} | PyArrow threads: {pa.cpu_count()}"
     )
+    print(f"Rust worker: {args.rust_binary.resolve()}")
     print(f"Benchmarking {len(csv_paths)} CSV files ({total_gib:.2f} GiB)...")
-    summary, results = benchmark(csv_paths, args.rounds)
+    rust_worker = RustPolarsWorker(args.rust_binary, args.data_dir)
+    try:
+        summary, results = benchmark(csv_paths, args.rounds, rust_worker)
+    finally:
+        rust_worker.close()
     print(summary.to_string(index=False, float_format=lambda value: f"{value:.3f}"))
     print(f"\nVerified: all implementations returned {len(results['Pandas'])} matching groups.")
 
